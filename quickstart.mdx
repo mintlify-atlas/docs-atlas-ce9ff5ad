@@ -1,80 +1,200 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Go from zero to a working Yoko bot in under 15 minutes."
 ---
 
-## Get started in three steps
+This guide walks you through setting up Yoko locally, connecting it to WhatsApp via Meta's webhook, and sending your first AI-powered reply.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have the following:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<CardGroup cols={3}>
+  <Card title="Python 3.9+" icon="python">
+    Download from [python.org](https://www.python.org/downloads/)
+  </Card>
+  <Card title="Meta developer account" icon="meta">
+    Create one at [developers.facebook.com](https://developers.facebook.com)
+  </Card>
+  <Card title="Groq API key" icon="key">
+    Get one free at [console.groq.com](https://console.groq.com)
+  </Card>
+</CardGroup>
 
-### Step 2: Deploy your changes
+## Setup
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Step title="Clone the repository">
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Download the project to your local machine:
 
-### Step 3: Go live
+```bash
+git clone https://github.com/juliorbk/yoko.git
+cd yoko
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+</Step>
+
+<Step title="Create and activate a virtual environment">
+
+<CodeGroup>
+
+```bash macOS / Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+```bash Windows
+python -m venv venv
+venv\Scripts\activate
+```
+
+</CodeGroup>
+
+</Step>
+
+<Step title="Install dependencies">
+
+```bash
+pip install flask requests groq
+```
+
+</Step>
+
+<Step title="Set your Groq API key">
+
+Open `llm.py` and replace the empty string with your key:
+
+```python llm.py
+GROQ_API_KEY = "gsk_your_api_key_here"  # Replace with your key
+GROQ_MODEL = "llama3-8b-8192"
+```
+
+<Warning>
+  Never commit your API key to version control. Consider loading it from an environment variable using `os.environ.get("GROQ_API_KEY")` before deploying.
+</Warning>
+
+</Step>
+
+<Step title="Create your knowledge base">
+
+Yoko answers questions by matching user input against entries in `data.json`. Create this file in the project root with at least two Q&A pairs:
+
+```json data.json
+[
+  {
+    "pregunta": "¿Cuándo es el período de inscripciones?",
+    "respuesta": "El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025. Debes acceder al portal estudiantil con tu código universitario para registrar tus cursos."
+  },
+  {
+    "pregunta": "¿Cuál es el horario de la biblioteca?",
+    "respuesta": "La biblioteca central abre de lunes a viernes de 7:00 a.m. a 10:00 p.m., y los sábados de 8:00 a.m. a 6:00 p.m. Los domingos permanece cerrada."
+  }
+]
+```
+
+<Note>
+  The `buscar_contexto` function in `mcp.py` uses fuzzy matching (`difflib.get_close_matches`) with a similarity cutoff of 0.4. Write questions in the same natural language your users will type — the closer the match, the better the answer.
+</Note>
+
+</Step>
+
+<Step title="Set your webhook verification token">
+
+Open `app.py` and set a secret token of your choosing. You will use this same value when configuring the webhook in the Meta dashboard:
+
+```python app.py
+VERIFY_TOKEN = "my_secret_token_123"  # Use any string you'll remember
+```
+
+</Step>
+
+<Step title="Run the Flask server">
+
+```bash
+python app.py
+```
+
+You should see output like:
+
+```
+ * Running on http://127.0.0.1:5000
+ * Debug mode: on
+```
+
+</Step>
+
+<Step title="Test webhook verification locally">
+
+While the server is running, open a second terminal and verify the endpoint responds correctly to Meta's handshake:
+
+```bash
+curl "http://localhost:5000/webhook?hub.verify_token=my_secret_token_123&hub.challenge=test_challenge_string&hub.mode=subscribe"
+```
+
+A successful response echoes back the challenge value:
+
+```
+test_challenge_string
+```
+
+<Warning>
+  If you receive `Token inválido` (HTTP 403), check that the `hub.verify_token` in the curl command exactly matches `VERIFY_TOKEN` in `app.py`.
+</Warning>
+
+</Step>
+
+<Step title="Expose your local server and configure Meta's webhook">
+
+Meta's servers need to reach your local machine over the internet. Use [ngrok](https://ngrok.com) or a similar tunneling tool:
+
+```bash
+ngrok http 5000
+```
+
+ngrok prints a public URL such as `https://a1b2-203-0-113-42.ngrok-free.app`. Then in the Meta developer dashboard:
+
+1. Go to your app → **WhatsApp** → **Configuration**.
+2. Set **Callback URL** to `https://your-ngrok-url.ngrok-free.app/webhook`.
+3. Set **Verify token** to the same value you put in `VERIFY_TOKEN`.
+4. Click **Verify and save**.
+5. Subscribe to the `messages` webhook field.
+
+<Note>
+  ngrok URLs change every time you restart the tunnel on a free plan. For a stable URL during development, keep the ngrok process running or use a paid plan with a static domain.
+</Note>
+
+</Step>
+
+</Steps>
+
+## Verify end-to-end
+
+Send a WhatsApp message to your test number. Yoko will:
+
+1. Receive the message at `POST /webhook`.
+2. Find the closest matching question in `data.json`.
+3. Pass the matched context and the original message to the Groq LLM.
+4. Reply with the generated answer.
+
+<Tip>
+  If Yoko replies "No se encontró información relevante," the fuzzy match score fell below 0.4. Add more Q&A pairs to `data.json` or rephrase existing questions to better match how users ask them.
+</Tip>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Expand your knowledge base" icon="database" href="/guides/knowledge-base">
+    Learn how to structure and grow your `data.json` for better coverage.
+  </Card>
+  <Card title="Configure WhatsApp" icon="whatsapp" href="/guides/whatsapp-configuration">
+    Set up a production phone number and permanent webhook URL.
+  </Card>
+  <Card title="Understand the architecture" icon="diagram-project" href="/concepts/architecture">
+    See how `app.py`, `mcp.py`, and `llm.py` work together.
+  </Card>
+  <Card title="Deploy to production" icon="rocket" href="/guides/deployment">
+    Host Yoko on a server so it runs 24/7.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

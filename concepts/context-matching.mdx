@@ -1,0 +1,176 @@
+---
+title: Context matching
+description: How mcp.py uses difflib fuzzy matching to retrieve the most relevant answer from data.json before calling the LLM.
+---
+
+Before Yoko calls the LLM, `mcp.py` searches `data.json` for the closest pre-written answer to the student's question. This retrieved text becomes the context the LLM uses to generate its reply.
+
+## The knowledge base schema
+
+`data.json` is a JSON array where each object has exactly two fields:
+
+```json data.json
+[
+  {
+    "pregunta": "¿Cuándo es el período de inscripciones?",
+    "respuesta": "El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025. Debes acceder al portal estudiantil con tu código universitario para registrar tus cursos."
+  },
+  {
+    "pregunta": "¿Cuál es el horario de la biblioteca?",
+    "respuesta": "La biblioteca central abre de lunes a viernes de 7:00 a.m. a 10:00 p.m., y los sábados de 8:00 a.m. a 6:00 p.m. Los domingos permanece cerrada."
+  }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `pregunta` | string | A representative question written in the same natural language your users type |
+| `respuesta` | string | The factual answer Yoko should use when this question is matched |
+
+<Note>
+  The quality of Yoko's answers depends directly on how well the `pregunta` values reflect real student phrasing. Write questions the way students actually ask them, not the way administrators would.
+</Note>
+
+## How `buscar_contexto` works
+
+The full function from `mcp.py`:
+
+```python mcp.py
+def buscar_contexto(pregunta_usuario):
+    with open("data.json", "r", encoding="utf-8") as f:
+        base = json.load(f)
+    preguntas = [item["pregunta"] for item in base]
+    mas_parecida = difflib.get_close_matches(pregunta_usuario, preguntas, n=1, cutoff=0.4)
+    if mas_parecida:
+        for item in base:
+            if item["pregunta"] == mas_parecida[0]:
+                return item["respuesta"]
+    return "No se encontró información relevante."
+```
+
+Step by step:
+
+<Steps>
+  <Step title="Load the knowledge base">
+    The file is read from disk on every call. This means you can update `data.json` without restarting the Flask server — changes take effect on the next message.
+
+    ```python
+    with open("data.json", "r", encoding="utf-8") as f:
+        base = json.load(f)
+    ```
+  </Step>
+  <Step title="Extract all questions into a plain list">
+    `difflib.get_close_matches` works on a flat list of strings, so the function pulls just the `pregunta` values out of the objects.
+
+    ```python
+    preguntas = [item["pregunta"] for item in base]
+    ```
+  </Step>
+  <Step title="Find the closest match">
+    `difflib.get_close_matches` computes a similarity ratio (based on the longest common subsequence) between `pregunta_usuario` and every string in `preguntas`. It returns up to `n=1` result whose similarity is at or above `cutoff=0.4`.
+
+    ```python
+    mas_parecida = difflib.get_close_matches(pregunta_usuario, preguntas, n=1, cutoff=0.4)
+    ```
+
+    A cutoff of `0.4` means the user's input needs to share roughly 40% of its character sequences with a stored question to count as a match. This is deliberately permissive to handle typos and short queries.
+  </Step>
+  <Step title="Return the matching answer">
+    If a match was found, the function iterates through the original list to find the full object and returns its `respuesta`.
+
+    ```python
+    if mas_parecida:
+        for item in base:
+            if item["pregunta"] == mas_parecida[0]:
+                return item["respuesta"]
+    ```
+  </Step>
+  <Step title="Return the fallback if nothing matched">
+    When no question meets the cutoff, the function returns a plain string. `manejar_query` passes this string to the LLM as context, so the LLM will produce an honest "I don't have that information" reply.
+
+    ```python
+    return "No se encontró información relevante."
+    ```
+  </Step>
+</Steps>
+
+## The `cutoff=0.4` threshold
+
+`difflib` similarity ratios range from `0.0` (no similarity) to `1.0` (exact match). The `cutoff` parameter controls the minimum acceptable ratio:
+
+| Cutoff | Behavior |
+|---|---|
+| `0.0` | Always matches — returns the single most similar string regardless of how different it is |
+| `0.4` | Yoko's setting — tolerates moderate differences (typos, word order, abbreviations) |
+| `0.6` | Conservative — requires significant overlap, fewer false positives |
+| `1.0` | Exact match only |
+
+<Tip>
+  If Yoko frequently returns "No se encontró información relevante" for questions that should match, lower the cutoff toward `0.3`. If it returns wrong answers for unrelated questions, raise it toward `0.5` or `0.6`.
+</Tip>
+
+## A concrete lookup example
+
+Suppose `data.json` contains:
+
+```json
+{
+  "pregunta": "¿Cuándo es el período de inscripciones?",
+  "respuesta": "El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025."
+}
+```
+
+And a student sends: `"cuando se inscriben los cursos"`
+
+1. `get_close_matches` computes similarity between `"cuando se inscriben los cursos"` and `"¿Cuándo es el período de inscripciones?"`.
+2. The shared sequences (`cuando`, `inscri`) produce a ratio above `0.4`.
+3. `mas_parecida` is `["¿Cuándo es el período de inscripciones?"]`.
+4. `buscar_contexto` returns `"El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025."`.
+5. That text becomes the `contexto` passed to `consultar_llm`.
+
+## The `manejar_query` orchestrator
+
+`manejar_query` is the public function that `app.py` calls. It coordinates the two steps:
+
+```python mcp.py
+def manejar_query(mensaje_usuario):
+    contexto = buscar_contexto(mensaje_usuario)
+    respuesta = consultar_llm(contexto, mensaje_usuario)
+    return respuesta
+```
+
+It does not filter or modify `contexto` before passing it to `consultar_llm`. Whether the context is a real answer or the fallback string, the LLM always receives it — the system prompt in `llm.py` instructs the model to answer using only that information.
+
+## Fuzzy matching vs semantic search
+
+`difflib` uses character-level sequence similarity, not meaning. This has real tradeoffs:
+
+<AccordionGroup>
+  <Accordion title="Advantages of difflib fuzzy matching">
+    - No external dependencies or API calls — runs entirely in memory
+    - Zero latency overhead on the matching step
+    - Handles typos and minor phrasing variations well
+    - Predictable and deterministic — the same input always produces the same match
+    - No embedding or vector index to maintain
+  </Accordion>
+  <Accordion title="Limitations of difflib fuzzy matching">
+    - Sensitive to vocabulary differences: `"fecha de matrícula"` and `"período de inscripciones"` mean the same thing but may not match
+    - Does not understand synonyms, paraphrases, or meaning
+    - Performance degrades as `data.json` grows (linear scan on every request)
+    - The `cutoff` is a single global threshold — not tunable per question
+  </Accordion>
+  <Accordion title="When to consider semantic search">
+    If your knowledge base grows beyond ~200 entries, or if students frequently rephrase questions using different vocabulary, consider replacing `buscar_contexto` with a semantic similarity approach using sentence embeddings (e.g., `sentence-transformers`) and a vector store. The `manejar_query` interface would remain unchanged — only the internals of `buscar_contexto` would need to be swapped.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="LLM integration" icon="brain" href="/concepts/llm-integration">
+    How the retrieved context is used to construct a Groq API prompt
+  </Card>
+  <Card title="Knowledge base guide" icon="database" href="/guides/knowledge-base">
+    Structuring and growing your `data.json` for better coverage
+  </Card>
+</CardGroup>

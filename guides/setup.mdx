@@ -1,0 +1,143 @@
+---
+title: 'Environment setup'
+description: 'Install dependencies, configure credentials, and run Yoko locally.'
+---
+
+This guide walks you through setting up Yoko on your local machine from scratch.
+
+## System requirements
+
+- Python 3.9 or higher
+- pip (included with Python 3.9+)
+- A terminal (macOS/Linux) or Command Prompt / PowerShell (Windows)
+
+## Get the project
+
+Clone the repository or download the source files into a local directory:
+
+```bash
+git clone https://github.com/your-org/yoko.git
+cd yoko
+```
+
+If you downloaded a ZIP, extract it and open a terminal in the extracted folder.
+
+## Create a virtual environment
+
+Using a virtual environment keeps Yoko's dependencies isolated from your system Python.
+
+<CodeGroup>
+
+```bash macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+```bash Windows
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+</CodeGroup>
+
+Your prompt should now show `(.venv)` to confirm the environment is active.
+
+## Install dependencies
+
+```bash
+pip install flask requests groq
+```
+
+This installs:
+- **flask** — the HTTP server that handles WhatsApp webhook calls
+- **requests** — used to send messages back via the WhatsApp Cloud API and to call Groq
+- **groq** — Groq Python client (used indirectly; the project calls the API directly with `requests`)
+
+## Project file structure
+
+| File | Purpose |
+|---|---|
+| `app.py` | Flask server. Handles the WhatsApp webhook (GET verification + POST message events) and calls `enviar_mensaje()` to reply. |
+| `mcp.py` | Query handler. Searches `data.json` for the closest matching question using fuzzy string matching, then passes the result to the LLM. |
+| `llm.py` | LLM client. Sends the retrieved context and the student's question to the Groq API and returns the generated answer. |
+| `data.json` | Knowledge base. A JSON array of question/answer pairs that Yoko uses to ground its responses. |
+
+## Configure your Groq API key
+
+Open `llm.py` and set your Groq API key on line 4:
+
+```python llm.py
+GROQ_API_KEY = "gsk_your_key_here"
+```
+
+You can get a free key at [console.groq.com](https://console.groq.com).
+
+<Warning>
+Never commit `llm.py` with a real API key in it. For production, use `python-dotenv` and load the key from a `.env` file. See the [deployment guide](/guides/deployment) for details.
+</Warning>
+
+## Configure your webhook verify token
+
+Open `app.py` and set `VERIFY_TOKEN` to any secret string you choose:
+
+```python app.py
+VERIFY_TOKEN = "my-secret-token-123"
+```
+
+You will enter this same string in the Meta developer portal when you register the webhook. Keep it consistent between both places.
+
+## Create the initial knowledge base
+
+Create a `data.json` file in the project root with at least a few question/answer pairs:
+
+```json data.json
+[
+  {
+    "pregunta": "¿Cuándo son las fechas de inscripción?",
+    "respuesta": "Las fechas de inscripción para el semestre 2025-2 son del 10 al 20 de julio. Puedes inscribirte a través del portal estudiantil en portalalumno.universidad.edu."
+  },
+  {
+    "pregunta": "¿Cuál es el horario de la biblioteca?",
+    "respuesta": "La biblioteca central abre de lunes a viernes de 7:00 a.m. a 10:00 p.m., y los sábados de 8:00 a.m. a 4:00 p.m. Los domingos permanece cerrada."
+  },
+  {
+    "pregunta": "¿Dónde está la oficina de bienestar estudiantil?",
+    "respuesta": "La oficina de bienestar estudiantil se encuentra en el edificio A, piso 2, oficina 204. El horario de atención es de lunes a viernes de 8:00 a.m. a 5:00 p.m."
+  }
+]
+```
+
+See the [knowledge base guide](/guides/knowledge-base) for best practices on writing effective entries.
+
+## Run the server
+
+```bash
+python app.py
+```
+
+You should see output similar to:
+
+```
+ * Running on http://127.0.0.1:5000
+ * Debug mode: on
+```
+
+## Verify the server is running
+
+In a second terminal, run a GET request against the webhook endpoint to confirm the token verification is working:
+
+```bash
+curl "http://localhost:5000/webhook?hub.verify_token=my-secret-token-123&hub.challenge=test_challenge"
+```
+
+If everything is configured correctly, the server responds with:
+
+```
+test_challenge
+```
+
+If you see `Token inválido` with a 403 status, double-check that `VERIFY_TOKEN` in `app.py` matches the value you passed in the `hub.verify_token` query parameter.
+
+<Tip>
+Keep the server running in one terminal while you work through the [WhatsApp configuration guide](/guides/whatsapp-configuration) in another.
+</Tip>

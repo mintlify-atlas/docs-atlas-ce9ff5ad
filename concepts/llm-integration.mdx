@@ -1,0 +1,201 @@
+---
+title: LLM integration
+description: How llm.py constructs prompts and calls the Groq API to generate answers grounded in the retrieved context.
+---
+
+`llm.py` is a thin HTTP client that sends a structured prompt to the Groq API and returns the model's reply as a plain string. It receives the context retrieved by `mcp.py` and the student's original question, then combines them into a constrained system prompt.
+
+## The Groq API endpoint
+
+Yoko calls the OpenAI-compatible chat completions endpoint hosted by Groq:
+
+```
+https://api.groq.com/openai/v1/chat/completions
+```
+
+Because Groq implements the OpenAI API spec, the request and response shapes are identical to the OpenAI chat completions API. This means you can switch providers by changing the `url` and `GROQ_API_KEY` without changing any of the message construction logic.
+
+## The full `consultar_llm` function
+
+```python llm.py
+GROQ_API_KEY = ""  # Colocar tu api key
+GROQ_MODEL = "llama3-8b-8192"
+
+def consultar_llm(contexto, pregunta):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    messages = [
+        {"role": "system", "content": f"Eres un asistente universitario responde usando solo esta información: {contexto}"},
+        {"role": "user", "content": pregunta}
+    ]
+    data = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.3
+    }
+    response = requests.post(url, headers=headers, json=data)
+    result = response.json()
+    if "choices" in result:
+        return result["choices"][0]["message"]["content"]
+    else:
+        return "No se pudo generar una respuesta. Intenta con otra pregunta."
+```
+
+## Parameters explained
+
+<AccordionGroup>
+  <Accordion title="Authorization header">
+    The API key is sent as a Bearer token in the `Authorization` header:
+
+    ```python
+    "Authorization": f"Bearer {GROQ_API_KEY}"
+    ```
+
+    `GROQ_API_KEY` is a module-level constant. For production deployments, load it from an environment variable instead of hardcoding it:
+
+    ```python
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    ```
+
+    <Warning>
+      Never commit a real API key to version control. An exposed Groq key can be used to run inference at your expense.
+    </Warning>
+  </Accordion>
+  <Accordion title="messages array — system and user roles">
+    The prompt is structured as a two-message conversation:
+
+    ```python
+    messages = [
+        {
+            "role": "system",
+            "content": f"Eres un asistente universitario responde usando solo esta información: {contexto}"
+        },
+        {
+            "role": "user",
+            "content": pregunta
+        }
+    ]
+    ```
+
+    The **system message** sets the model's identity and, critically, injects the retrieved `contexto` directly into the prompt. The phrase "responde usando solo esta información" instructs the model to answer exclusively from the provided context and not draw on its training data. This prevents the model from inventing university-specific details it cannot know.
+
+    The **user message** is the student's original question, passed through unchanged from `mcp.py`.
+  </Accordion>
+  <Accordion title="temperature: 0.3">
+    Temperature controls how much randomness is applied to the model's token sampling:
+
+    | Value | Behavior |
+    |---|---|
+    | `0.0` | Fully deterministic — always picks the highest-probability token |
+    | `0.3` | Yoko's setting — low creativity, high consistency |
+    | `0.7–1.0` | More varied and creative responses |
+
+    `0.3` is appropriate for a university support bot because students expect consistent, factual answers. The same question should always produce the same substantive reply. Higher temperatures introduce variation that could make the bot seem unreliable.
+  </Accordion>
+  <Accordion title="model: llama3-8b-8192">
+    `llama3-8b-8192` is Meta's Llama 3 8B parameter model with an 8,192-token context window, served by Groq on their LPU hardware.
+
+    This model is a good fit for Yoko because:
+    - **Fast inference** — Groq's LPU delivers very low latency, keeping WhatsApp reply times short
+    - **8B parameters** — sufficient capability for Q&A and summarization tasks on constrained context
+    - **Free tier available** — Groq offers generous free usage limits, making it practical for university deployments
+    - **8K context window** — large enough to hold the student's question plus a full `respuesta` entry
+  </Accordion>
+</AccordionGroup>
+
+## Request and response example
+
+**Request body sent to Groq:**
+
+```json
+{
+  "model": "llama3-8b-8192",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Eres un asistente universitario responde usando solo esta información: El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025. Debes acceder al portal estudiantil con tu código universitario para registrar tus cursos."
+    },
+    {
+      "role": "user",
+      "content": "cuando se inscriben los cursos"
+    }
+  ],
+  "temperature": 0.3
+}
+```
+
+**Groq API response:**
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025. Para registrar tus cursos, debes acceder al portal estudiantil con tu código universitario."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 87,
+    "completion_tokens": 42,
+    "total_tokens": 129
+  }
+}
+```
+
+**Extracted reply:**
+
+```python
+result["choices"][0]["message"]["content"]
+# → "El período de inscripciones para el semestre 2025-1 es del 10 al 20 de enero de 2025..."
+```
+
+## Error handling
+
+`consultar_llm` checks for the presence of the `"choices"` key in the response before attempting to read the answer:
+
+```python
+if "choices" in result:
+    return result["choices"][0]["message"]["content"]
+else:
+    return "No se pudo generar una respuesta. Intenta con otra pregunta."
+```
+
+The Groq API omits `"choices"` and returns an `"error"` key instead when:
+
+- The API key is missing or invalid (HTTP 401)
+- The model name is incorrect (HTTP 400)
+- The rate limit has been exceeded (HTTP 429)
+- The service is temporarily unavailable (HTTP 5xx)
+
+<Warning>
+  The current implementation calls `response.json()` without checking `response.status_code` first. If the Groq API returns a non-JSON error body (rare, but possible on network failures), this will raise a `requests.exceptions.JSONDecodeError`. For production use, add a status code check before parsing:
+
+  ```python
+  response.raise_for_status()  # raises HTTPError for 4xx/5xx
+  result = response.json()
+  ```
+</Warning>
+
+<Note>
+  The fallback string `"No se pudo generar una respuesta. Intenta con otra pregunta."` is returned to the student via WhatsApp. It signals a transient API error, not a missing knowledge base entry (which produces a different message from `mcp.py`: `"No se encontró información relevante."`).
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    See how llm.py fits into the full message pipeline
+  </Card>
+  <Card title="Context matching" icon="magnifying-glass" href="/concepts/context-matching">
+    How the context passed to consultar_llm is retrieved
+  </Card>
+</CardGroup>

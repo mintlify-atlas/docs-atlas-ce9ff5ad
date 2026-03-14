@@ -1,0 +1,266 @@
+---
+title: 'Deployment'
+description: 'Deploy Yoko to a production environment with HTTPS, environment variables, and a production-grade server.'
+---
+
+Meta requires a publicly accessible **HTTPS** endpoint to deliver WhatsApp messages. This guide covers how to deploy Yoko securely, using environment variables for credentials and gunicorn as the production server.
+
+## Deployment options
+
+<CardGroup cols={2}>
+  <Card title="PythonAnywhere" icon="python">
+    Free tier available. Supports Python web apps out of the box. Provides a subdomain with HTTPS automatically. Limited outbound requests on the free plan — upgrade required for WhatsApp API calls.
+  </Card>
+  <Card title="Railway" icon="train-track">
+    Simple deploys from a GitHub repo. Free starter tier. HTTPS included. Persistent processes supported. Good choice for small production workloads.
+  </Card>
+  <Card title="Render" icon="cloud">
+    Free tier spins down after inactivity (cold starts). HTTPS included. Auto-deploys from GitHub. Suitable for low-traffic bots; upgrade to a paid plan to avoid cold starts.
+  </Card>
+  <Card title="VPS (DigitalOcean, Linode, Hetzner)" icon="server">
+    Full control. You manage the OS, gunicorn, and an Nginx reverse proxy for HTTPS (via Let's Encrypt). Most work to set up, but most flexible for production.
+  </Card>
+</CardGroup>
+
+| Platform | HTTPS | Free tier | Cold starts | Setup effort |
+|---|---|---|---|---|
+| PythonAnywhere | Automatic | Yes (limited) | No | Low |
+| Railway | Automatic | Yes | No | Low |
+| Render | Automatic | Yes | Yes (free tier) | Low |
+| VPS | Manual (Nginx + Let's Encrypt) | No | No | High |
+
+## Use environment variables for credentials
+
+Hardcoding API keys and tokens in source files is a security risk. Use `python-dotenv` to load them from a `.env` file at runtime.
+
+### Install python-dotenv
+
+```bash
+pip install python-dotenv
+```
+
+Add it to your requirements file if you have one:
+
+```bash
+pip freeze > requirements.txt
+```
+
+### Create a .env file
+
+Create a `.env` file in the project root:
+
+```bash .env
+GROQ_API_KEY=gsk_your_groq_key_here
+VERIFY_TOKEN=my-secret-token-123
+PHONE_NUMBER_ID=123456789012345
+WHATSAPP_ACCESS_TOKEN=EAAGm...
+```
+
+<Warning>
+Add `.env` to your `.gitignore` immediately. Never commit this file to version control.
+
+```bash .gitignore
+.env
+.venv/
+__pycache__/
+```
+</Warning>
+
+### Refactor llm.py
+
+Replace the hardcoded `GROQ_API_KEY` with a value loaded from the environment:
+
+```python llm.py
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = "llama3-8b-8192"
+
+def consultar_llm(contexto, pregunta):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    messages = [
+        {"role": "system", "content": f"Eres un asistente universitario responde usando solo esta información: {contexto}"},
+        {"role": "user", "content": pregunta}
+    ]
+    data = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.3
+    }
+    response = requests.post(url, headers=headers, json=data)
+    result = response.json()
+    if "choices" in result:
+        return result["choices"][0]["message"]["content"]
+    else:
+        return "No se pudo generar una respuesta. Intenta con otra pregunta."
+```
+
+### Refactor app.py
+
+Load `VERIFY_TOKEN` and the WhatsApp credentials from the environment:
+
+```python app.py
+import os
+from flask import Flask, request
+from mcp import manejar_query
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
+WHATSAPP_ACCESS_TOKEN = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+
+@app.route("/webhook", methods=["GET", "POST"])
+def webhook():
+    if request.method == "GET":
+        token_enviado = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if token_enviado == VERIFY_TOKEN:
+            return challenge, 200
+        return "Token inválido", 403
+
+    if request.method == "POST":
+        data = request.json
+        try:
+            entry = data["entry"][0]["changes"][0]["value"]
+            if "messages" in entry:
+                mensaje = entry["messages"][0]["text"]["body"]
+                numero = entry["messages"][0]["from"]
+                respuesta = manejar_query(mensaje)
+                if respuesta:
+                    enviar_mensaje(numero, respuesta)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+        return "OK", 200
+
+def enviar_mensaje(numero, texto):
+    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero,
+        "type": "text",
+        "text": {"body": texto}
+    }
+    response = requests.post(url, headers=headers, json=payload)
+
+if __name__ == "__main__":
+    app.run(port=5000, debug=True)
+```
+
+## Use gunicorn in production
+
+Flask's built-in development server (`app.run()`) is single-threaded and not safe for production. Use gunicorn instead.
+
+### Install gunicorn
+
+```bash
+pip install gunicorn
+```
+
+### Start the server
+
+```bash
+gunicorn --workers 2 --bind 0.0.0.0:5000 app:app
+```
+
+- `--workers 2` — two worker processes; adjust based on your server's CPU cores (a common formula is `2 * cores + 1`)
+- `--bind 0.0.0.0:5000` — listens on all interfaces at port 5000
+- `app:app` — the module name (`app.py`) and the Flask instance name (`app`)
+
+<Note>
+On Railway, Render, and similar platforms, set the start command to the gunicorn command above instead of `python app.py`.
+</Note>
+
+### Keep gunicorn running with systemd (VPS only)
+
+If you are on a VPS, create a systemd service so Yoko restarts automatically on reboot:
+
+```ini /etc/systemd/system/yoko.service
+[Unit]
+Description=Yoko WhatsApp Bot
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/yoko
+EnvironmentFile=/home/ubuntu/yoko/.env
+ExecStart=/home/ubuntu/yoko/.venv/bin/gunicorn --workers 2 --bind 0.0.0.0:5000 app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start it:
+
+```bash
+sudo systemctl enable yoko
+sudo systemctl start yoko
+```
+
+## Health check
+
+After deploying, verify the webhook endpoint responds correctly:
+
+```bash
+curl "https://your-deployed-domain.com/webhook?hub.verify_token=my-secret-token-123&hub.challenge=healthcheck"
+```
+
+Expected response:
+
+```
+healthcheck
+```
+
+If you receive a 403, the `VERIFY_TOKEN` environment variable on the server does not match the value used in the curl command.
+
+## Monitoring logs
+
+<Tabs>
+  <Tab title="gunicorn">
+    gunicorn writes to stdout by default. On Railway and Render, logs are accessible from the platform dashboard.
+
+    To write to a file on a VPS:
+
+    ```bash
+    gunicorn --workers 2 --bind 0.0.0.0:5000 \
+      --access-logfile /var/log/yoko/access.log \
+      --error-logfile /var/log/yoko/error.log \
+      app:app
+    ```
+  </Tab>
+  <Tab title="systemd (VPS)">
+    If you are using the systemd service:
+
+    ```bash
+    # View live logs
+    sudo journalctl -u yoko -f
+
+    # View last 100 lines
+    sudo journalctl -u yoko -n 100
+    ```
+  </Tab>
+  <Tab title="Flask dev server">
+    When running `python app.py` locally, all incoming requests and Python tracebacks print directly to the terminal. The `traceback.print_exc()` call in `app.py` ensures exceptions from message handling are always visible.
+  </Tab>
+</Tabs>
+
+<Tip>
+After updating `data.json` on the server, you do not need to restart gunicorn — the file is read on every request. Code changes to `app.py`, `mcp.py`, or `llm.py` do require a restart.
+</Tip>

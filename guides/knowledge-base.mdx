@@ -1,0 +1,175 @@
+---
+title: 'Knowledge base'
+description: 'Build and maintain the data.json file that Yoko uses to answer student questions.'
+---
+
+Yoko answers questions by searching `data.json` for the closest matching entry and passing the result to the LLM as context. The quality of Yoko's answers depends directly on the quality of this file.
+
+## The data.json schema
+
+`data.json` is a JSON array. Each element is an object with exactly two string fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `pregunta` | string | A representative question that students might ask. Used for fuzzy matching. |
+| `respuesta` | string | The answer Yoko should give. Passed verbatim to the LLM as context. |
+
+```json data.json
+[
+  {
+    "pregunta": "...",
+    "respuesta": "..."
+  }
+]
+```
+
+## Example knowledge base
+
+Here is a realistic starting point with university-related Q&A pairs in Spanish:
+
+```json data.json
+[
+  {
+    "pregunta": "¿Cuándo son las fechas de inscripción?",
+    "respuesta": "Las inscripciones para el semestre 2025-2 se realizan del 10 al 20 de julio de 2025. Accede al portal estudiantil en portalalumno.universidad.edu con tu número de matrícula para completar el proceso."
+  },
+  {
+    "pregunta": "¿Cuál es el horario de la biblioteca?",
+    "respuesta": "La biblioteca central atiende de lunes a viernes de 7:00 a.m. a 10:00 p.m. y los sábados de 8:00 a.m. a 4:00 p.m. Los domingos y días festivos permanece cerrada."
+  },
+  {
+    "pregunta": "¿Dónde está la oficina de registro escolar?",
+    "respuesta": "La oficina de Registro Escolar se ubica en el edificio de Administración Central, planta baja, ventanilla 3. Horario: lunes a viernes de 8:00 a.m. a 3:00 p.m. Teléfono: 55 1234 5678."
+  },
+  {
+    "pregunta": "¿Cómo solicito una constancia de estudios?",
+    "respuesta": "Puedes solicitar tu constancia de estudios en línea desde el portal estudiantil en la sección 'Trámites y Servicios'. El tiempo de entrega es de 3 a 5 días hábiles. Si la necesitas urgente, acude directamente a Registro Escolar con tu credencial vigente."
+  },
+  {
+    "pregunta": "¿Cuándo empiezan las clases del semestre?",
+    "respuesta": "El semestre 2025-2 inicia el 4 de agosto de 2025. La primera semana es de presentación de cursos. Consulta el calendario académico completo en calendario.universidad.edu."
+  },
+  {
+    "pregunta": "¿Dónde puedo pagar mi colegiatura?",
+    "respuesta": "El pago de colegiatura se realiza a través del portal de pagos en pagos.universidad.edu o en cualquier sucursal del Banco Nacional presentando tu referencia de pago. La fecha límite para el semestre 2025-2 es el 31 de julio de 2025."
+  },
+  {
+    "pregunta": "¿Cuál es el número de la dirección escolar?",
+    "respuesta": "La Dirección Escolar puede contactarse al teléfono 55 9876 5432 en horario de lunes a viernes de 9:00 a.m. a 2:00 p.m., o por correo a direccionescolar@universidad.edu."
+  }
+]
+```
+
+## How buscar_contexto works
+
+When a student sends a message, `mcp.py` calls `buscar_contexto()` to find the most relevant answer:
+
+```python mcp.py
+def buscar_contexto(pregunta_usuario):
+    with open("data.json", "r", encoding="utf-8") as f:
+        base = json.load(f)
+    preguntas = [item["pregunta"] for item in base]
+    mas_parecida = difflib.get_close_matches(pregunta_usuario, preguntas, n=1, cutoff=0.4)
+    if mas_parecida:
+        for item in base:
+            if item["pregunta"] == mas_parecida[0]:  
+                return item["respuesta"]
+    return "No se encontró información relevante."
+```
+
+The function:
+1. Loads all entries from `data.json`
+2. Extracts all `pregunta` strings into a list
+3. Uses `difflib.get_close_matches` to find the question most similar to what the student typed
+4. Returns the corresponding `respuesta`, or a fallback string if no match exceeds the threshold
+
+The returned `respuesta` is then passed to `consultar_llm()` as the context the LLM must use to compose its reply.
+
+## The cutoff threshold
+
+`get_close_matches` is called with `cutoff=0.4`, which means a match must be at least 40% similar (by sequence ratio) to be accepted.
+
+| Cutoff | Effect |
+|---|---|
+| Lower (e.g., 0.2) | More matches, including weak ones. Yoko may answer using the wrong context. |
+| 0.4 (default) | Balanced. Works well when students phrase questions naturally. |
+| Higher (e.g., 0.7) | Fewer matches. Yoko falls back to "No se encontró información" more often, but avoids wrong answers. |
+
+**When to lower it:** Your knowledge base has very short questions (2–3 words) or students tend to use abbreviations.
+
+**When to raise it:** You have many similar questions and are seeing Yoko pick the wrong context.
+
+Change the value in `mcp.py`:
+
+```python mcp.py
+mas_parecida = difflib.get_close_matches(pregunta_usuario, preguntas, n=1, cutoff=0.5)
+```
+
+## Best practices for pregunta entries
+
+The `pregunta` field is matched against what students actually type in WhatsApp. Write it the way a student would phrase the question, not the way an administrator would.
+
+<Tip>
+If a question gets missed frequently, add a second entry with an alternative phrasing — you can have multiple entries with different `pregunta` values pointing to the same `respuesta`.
+</Tip>
+
+- **Use conversational language:** `"¿A qué hora abre la biblioteca?"` instead of `"Horario de atención biblioteca central"`
+- **Include common variations:** Add separate entries for `"¿Cuándo puedo inscribirme?"` and `"¿Cuáles son las fechas de inscripción?"` if both are common
+- **Keep questions focused:** One topic per entry. Split compound questions into separate entries.
+- **Match the length students use:** Very short entries (`"biblioteca"`) match poorly. Aim for a full question of 6–12 words.
+- **Use Spanish accents and punctuation** in the `pregunta` since `difflib` is character-sensitive
+
+## Best practices for respuesta entries
+
+- **Be specific:** Include exact dates, times, building names, room numbers, phone numbers, and URLs
+- **Keep it self-contained:** The LLM receives only this text as context — do not reference other answers or say "see above"
+- **Limit length:** Aim for 2–4 sentences. Longer answers may get truncated or confuse the LLM
+- **Update regularly:** Outdated information (wrong dates, closed offices) is worse than no answer at all
+- **Avoid vague instructions:** Instead of `"consulta el portal"`, write `"accede en portalalumno.universidad.edu"`
+
+## Adding new entries
+
+Open `data.json` and append a new object inside the array:
+
+```json data.json
+[
+  ...,
+  {
+    "pregunta": "¿Dónde consigo mi credencial universitaria?",
+    "respuesta": "La credencial universitaria se tramita en la Dirección de Servicios Escolares, edificio B, oficina 101. Necesitas una foto tamaño infantil y tu comprobante de pago de inscripción. Tiempo de entrega: 5 días hábiles."
+  }
+]
+```
+
+<Warning>
+Make sure the file remains valid JSON after editing. Trailing commas and missing closing brackets are the most common errors. Validate with `python -c "import json; json.load(open('data.json'))"` before restarting the server.
+</Warning>
+
+## Testing matches manually
+
+Before deploying new entries, test that `buscar_contexto` finds them correctly:
+
+```python
+# Run this in a Python shell from the project directory
+from mcp import buscar_contexto
+
+print(buscar_contexto("¿cuándo me puedo inscribir?"))
+print(buscar_contexto("horario biblio"))
+print(buscar_contexto("donde pago la colegiatura"))
+```
+
+If a question returns `"No se encontró información relevante."` but should match, either:
+- The `pregunta` phrasing in `data.json` is too different from what was typed — rewrite it
+- The `cutoff` is too high — lower it slightly
+- The question is genuinely out of scope — add a new entry
+
+## Limitations
+
+`buscar_contexto` uses **fuzzy string matching only**. This means:
+
+- It compares character sequences, not meaning. `"inscripción"` and `"matrícula"` are treated as unrelated even though they are synonyms in some universities.
+- It cannot handle multi-topic questions ("¿cuándo es inscripción y dónde está la biblioteca?")
+- There is no vector search or semantic embedding at this layer — the LLM adds reasoning, but only over the single matched context string
+- The knowledge base must be manually updated; Yoko does not learn from conversations
+
+For larger deployments, consider replacing `buscar_contexto` with a vector database (e.g., ChromaDB, Pinecone) that supports semantic search.

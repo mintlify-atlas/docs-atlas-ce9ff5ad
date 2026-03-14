@@ -1,0 +1,215 @@
+---
+title: app.py
+description: Flask webhook server that receives WhatsApp messages and sends replies via the Meta Graph API.
+---
+
+`app.py` is the entry point for Yoko. It runs a Flask web server that:
+
+1. Exposes a `/webhook` endpoint for Meta to verify and deliver WhatsApp message events.
+2. Parses incoming messages and delegates them to `mcp.manejar_query` for processing.
+3. Sends the generated response back to the user via the WhatsApp Cloud API.
+
+## Constants
+
+<ParamField path="VERIFY_TOKEN" type="string">
+  The token Meta uses to verify that your webhook endpoint belongs to you. Must match the value you enter in the Meta App Dashboard when configuring the webhook. Set this to a long, random secret string.
+</ParamField>
+
+<Warning>
+  `VERIFY_TOKEN` is hardcoded as an empty string by default. Never commit a real token to source control. Use a `.env` file and `python-dotenv` to inject it at runtime. See [Configuration](/reference/configuration) for details.
+</Warning>
+
+## Routes
+
+### GET /webhook
+
+Webhook verification handshake required by Meta. When you register a webhook URL in the Meta App Dashboard, Meta sends a `GET` request to confirm ownership.
+
+**Query parameters**
+
+<ParamField query="hub.verify_token" type="string" required>
+  The verification token Meta sends back. Yoko compares this against `VERIFY_TOKEN`.
+</ParamField>
+
+<ParamField query="hub.challenge" type="string" required>
+  A random string Meta expects to receive verbatim in the response body.
+</ParamField>
+
+**Responses**
+
+| Status | Condition | Body |
+|--------|-----------|------|
+| `200` | `hub.verify_token` matches `VERIFY_TOKEN` | The value of `hub.challenge` |
+| `403` | Token mismatch | `"Token inválido"` |
+
+<CodeGroup>
+
+```bash Verification request (Meta → Yoko)
+curl "https://your-server.com/webhook\
+  ?hub.mode=subscribe\
+  &hub.verify_token=my_secret_token\
+  &hub.challenge=abc123"
+```
+
+```bash Successful response
+abc123
+```
+
+</CodeGroup>
+
+---
+
+### POST /webhook
+
+Receives WhatsApp message event payloads from Meta. Yoko extracts the message text and sender phone number, calls `manejar_query`, and sends the reply.
+
+Always returns `"OK"` with status `200` — even on processing errors — to prevent Meta from retrying the delivery.
+
+**Request body**
+
+Meta sends a JSON payload with the following structure:
+
+```json Meta webhook payload
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "from": "521234567890",
+                "text": {
+                  "body": "¿Cuándo es el período de inscripciones?"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Yoko reads:
+- `entry[0].changes[0].value.messages[0].text.body` — the message text
+- `entry[0].changes[0].value.messages[0].from` — the sender's phone number
+
+<Note>
+  Events that do not contain a `messages` array (e.g., status updates, delivery receipts) are silently ignored.
+</Note>
+
+**Response**
+
+| Status | Body |
+|--------|------|
+| `200` | `"OK"` |
+
+---
+
+## Functions
+
+### webhook()
+
+Route handler for both `GET /webhook` and `POST /webhook`. Branches on `request.method`:
+
+- **GET**: Reads `hub.verify_token` and `hub.challenge` from query parameters. Returns the challenge if the token matches, otherwise `403`.
+- **POST**: Parses the JSON body, extracts the sender number and message text, calls `manejar_query(mensaje)` to get a response, and calls `enviar_mensaje(numero, respuesta)` to deliver it.
+
+```python app.py
+@app.route("/webhook", methods=["GET", "POST"]) 
+def webhook():
+    if request.method == "GET":
+        token_enviado = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if token_enviado == VERIFY_TOKEN:
+            return challenge, 200 
+        return "Token inválido", 403 
+
+    if request.method == "POST":
+        data = request.json
+        try:
+            entry = data["entry"][0]["changes"][0]["value"]
+            if "messages" in entry:
+                mensaje = entry["messages"][0]["text"]["body"]
+                numero = entry["messages"][0]["from"]
+
+                respuesta = manejar_query(mensaje)
+
+                if respuesta:
+                    enviar_mensaje(numero, respuesta)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
+        return "OK", 200
+```
+
+---
+
+### enviar_mensaje(numero, texto)
+
+Sends a text message to a WhatsApp user via the Meta Cloud API.
+
+<ParamField path="numero" type="string" required>
+  The recipient's WhatsApp phone number in E.164 format, e.g. `"521234567890"`. This comes directly from the incoming webhook payload (`messages[0].from`).
+</ParamField>
+
+<ParamField path="texto" type="string" required>
+  The message body to send. This is the string returned by `manejar_query`.
+</ParamField>
+
+**Headers sent to the WhatsApp API**
+
+| Header | Value |
+|--------|-------|
+| `Authorization` | `Bearer <WHATSAPP_TOKEN>` |
+| `Content-Type` | `application/json` |
+
+**Payload sent to the WhatsApp API**
+
+```json Outbound payload
+{
+  "messaging_product": "whatsapp",
+  "to": "521234567890",
+  "type": "text",
+  "text": {
+    "body": "Las inscripciones abren el 15 de febrero."
+  }
+}
+```
+
+```python app.py
+def enviar_mensaje(numero, texto):
+    url = ""  # WhatsApp Cloud API messages endpoint
+    headers = {
+        "Authorization": "Bearer <WHATSAPP_TOKEN>",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero,
+        "type": "text",
+        "text": {"body": texto}
+    }
+    response = requests.post(url, headers=headers, json=payload)
+```
+
+<Warning>
+  The Bearer token and the API URL are hardcoded in the source. Move both to environment variables before deploying. See [Configuration](/reference/configuration).
+</Warning>
+
+## Server startup
+
+When run directly, the Flask development server starts on port `5000` with debug mode enabled:
+
+```python app.py
+if __name__ == "__main__":
+    app.run(port=5000, debug=True)
+```
+
+<Warning>
+  Do not run with `debug=True` in production. Set `debug=False` and use a production WSGI server such as Gunicorn.
+</Warning>

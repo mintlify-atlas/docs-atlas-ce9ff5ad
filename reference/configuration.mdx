@@ -1,0 +1,121 @@
+---
+title: Configuration
+description: All configurable values in Yoko, where they live, their defaults, and how to manage secrets safely.
+---
+
+Yoko's configuration is spread across three source files. This page consolidates every configurable value in one place.
+
+<Warning>
+  Several values — `VERIFY_TOKEN`, `GROQ_API_KEY`, and the WhatsApp API token and URL — are currently hardcoded directly in source files. This is unsafe for any deployed environment. Follow the [python-dotenv setup](#using-python-dotenv) instructions below to externalize all secrets.
+</Warning>
+
+## All configuration values
+
+| Name | File | Type | Default | Description |
+|------|------|------|---------|-------------|
+| `VERIFY_TOKEN` | `app.py` | string | `""` | Token Meta sends to verify your webhook URL. Must match what you enter in the Meta App Dashboard. |
+| WhatsApp API URL | `app.py` → `enviar_mensaje` | string | `""` | The Meta Graph API messages endpoint, e.g. `https://graph.facebook.com/v19.0/<PHONE_NUMBER_ID>/messages`. |
+| WhatsApp Bearer token | `app.py` → `enviar_mensaje` | string | `""` | The access token sent in the `Authorization: Bearer` header when posting messages. |
+| `port` | `app.py` | int | `5000` | Flask development server port. |
+| `debug` | `app.py` | bool | `True` | Flask debug mode. Enables auto-reload and detailed error pages. |
+| `GROQ_API_KEY` | `llm.py` | string | `""` | Your Groq API key. Obtain from [console.groq.com](https://console.groq.com). |
+| `GROQ_MODEL` | `llm.py` | string | `"llama3-8b-8192"` | Groq model identifier. Controls which LLM processes each query. |
+| `temperature` | `llm.py` | float | `0.3` | Sampling temperature for the LLM. Lower values produce more consistent answers; higher values produce more varied ones. Range: `0.0`–`2.0`. |
+| `cutoff` | `mcp.py` | float | `0.4` | Minimum similarity ratio for `difflib.get_close_matches`. Questions below this threshold return `"No se encontró información relevante."`. Range: `0.0`–`1.0`. |
+| `n` | `mcp.py` | int | `1` | Maximum number of close matches `difflib.get_close_matches` may return. Increasing this would require changes to `buscar_contexto` to handle multiple results. |
+
+## Secrets
+
+Three values are sensitive and must never be committed to version control:
+
+<ParamField path="VERIFY_TOKEN" type="string" required>
+  Set this to a long, random string (e.g. a UUID) and enter the same value in the Meta App Dashboard under **Webhooks → Verify Token**.
+</ParamField>
+
+<ParamField path="GROQ_API_KEY" type="string" required>
+  Your Groq API key. Treat this like a password — it grants full access to your Groq account quota.
+</ParamField>
+
+<ParamField path="WHATSAPP_TOKEN" type="string" required>
+  The permanent or temporary access token for the WhatsApp Business API. Found in the Meta App Dashboard under **WhatsApp → API Setup**.
+</ParamField>
+
+## Non-secret configuration
+
+<ParamField path="GROQ_MODEL" type="string" default="llama3-8b-8192">
+  Change this to switch to a different Groq-hosted model, for example `"llama3-70b-8192"` for the larger 70B variant or `"mixtral-8x7b-32768"` for a 32K context window.
+</ParamField>
+
+<ParamField path="temperature" type="float" default="0.3">
+  Defined inline in `llm.py` inside `consultar_llm`. To tune response style without changing code, move this to an environment variable.
+</ParamField>
+
+<ParamField path="cutoff" type="float" default="0.4">
+  Defined inline in `mcp.py` inside `buscar_contexto`. Raising this (e.g. to `0.6`) makes matching stricter; lowering it (e.g. to `0.2`) returns more results but risks irrelevant context.
+</ParamField>
+
+<ParamField path="port" type="int" default="5000">
+  The port the Flask development server binds to when running `python app.py` directly.
+</ParamField>
+
+<ParamField path="debug" type="bool" default="True">
+  Flask debug mode. Set to `False` in any internet-facing deployment.
+</ParamField>
+
+## Using python-dotenv
+
+The recommended approach is to store all secrets in a `.env` file and load them with `python-dotenv`.
+
+<Steps>
+  <Step title="Install python-dotenv">
+    ```bash
+    pip install python-dotenv
+    ```
+  </Step>
+
+  <Step title="Create a .env file">
+    Create `.env` in the project root. Add it to `.gitignore` immediately.
+
+    ```bash .env
+    VERIFY_TOKEN=your-random-secret-token
+    GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx
+    WHATSAPP_TOKEN=EAAxxxxxxxxxxxxxxxxxx
+    WHATSAPP_URL=https://graph.facebook.com/v19.0/YOUR_PHONE_NUMBER_ID/messages
+    ```
+  </Step>
+
+  <Step title="Add to .gitignore">
+    ```bash .gitignore
+    .env
+    ```
+  </Step>
+
+  <Step title="Load variables in app.py">
+    ```python app.py
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
+    WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
+    WHATSAPP_URL = os.getenv("WHATSAPP_URL", "")
+    ```
+  </Step>
+
+  <Step title="Load variables in llm.py">
+    ```python llm.py
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  When deploying to a cloud platform (e.g. Railway, Render, Fly.io), set environment variables through the platform's dashboard or CLI instead of shipping a `.env` file. The `python-dotenv` call is harmless when no `.env` file is present — it simply reads from the existing environment.
+</Tip>

@@ -1,0 +1,199 @@
+---
+title: 'WhatsApp configuration'
+description: 'Connect Yoko to the Meta WhatsApp Cloud API by registering a webhook and configuring a phone number.'
+---
+
+This guide walks through the full Meta developer portal setup needed to route real WhatsApp messages to your Yoko instance.
+
+## Prerequisites
+
+- A [Meta developer account](https://developers.facebook.com)
+- A verified Facebook Business portfolio (required by Meta before sending messages to non-test numbers)
+- Yoko running locally or deployed to an HTTPS endpoint
+
+<Info>
+If you are testing locally, Meta requires a publicly accessible HTTPS URL for the webhook. Use ngrok to expose your local server — covered in the webhook setup step below.
+</Info>
+
+## Steps
+
+<Steps>
+
+<Step title="Create a Meta App">
+
+1. Go to [developers.facebook.com/apps](https://developers.facebook.com/apps) and click **Create App**.
+2. Select **Business** as the app type.
+3. Give the app a name (e.g., "Yoko University Bot") and associate it with your Business portfolio.
+4. After creation, scroll to the **Add products** section and click **Set up** under **WhatsApp**.
+
+</Step>
+
+<Step title="Get your Phone Number ID and Business Account ID">
+
+In the left sidebar, navigate to **WhatsApp → API Setup**.
+
+You will see two values you need:
+
+- **Phone Number ID** — used in the API URL to send messages
+- **WhatsApp Business Account ID** — identifies your business account
+
+Copy both values. The Phone Number ID goes directly into the API URL:
+
+```
+https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages
+```
+
+Paste your Phone Number ID into `app.py` in the `enviar_mensaje` function:
+
+```python app.py
+def enviar_mensaje(numero, texto):
+    url = "https://graph.facebook.com/v18.0/123456789012345/messages"
+```
+
+</Step>
+
+<Step title="Generate a permanent access token">
+
+The default temporary token on the API Setup page expires in 24 hours. For anything beyond quick testing, generate a permanent token:
+
+1. Go to **Business Settings → System Users** in [business.facebook.com](https://business.facebook.com).
+2. Create a System User with the **Admin** role.
+3. Click **Generate New Token**, select your app, and grant the `whatsapp_business_messaging` permission.
+4. Copy the token.
+
+Paste it into `app.py`:
+
+```python app.py
+headers = {
+    "Authorization": "Bearer EAAGm...",  # your permanent token
+    "Content-Type": "application/json"
+}
+```
+
+<Warning>
+Do not hardcode the token in source files you commit to version control. Use environment variables instead. See the [deployment guide](/guides/deployment) for how to load credentials from a `.env` file.
+</Warning>
+
+</Step>
+
+<Step title="Expose your local server with ngrok">
+
+Meta requires an **HTTPS** URL for the webhook. When developing locally, use ngrok to create a secure tunnel to your Flask server.
+
+Install ngrok from [ngrok.com/download](https://ngrok.com/download), then run:
+
+```bash
+ngrok http 5000
+```
+
+ngrok prints a forwarding URL like:
+
+```
+Forwarding   https://a1b2c3d4.ngrok-free.app -> http://localhost:5000
+```
+
+Copy the `https://` URL — this is your webhook URL. Note that it changes every time you restart ngrok unless you have a paid ngrok account with a fixed domain.
+
+<Tip>
+If you have already deployed Yoko to a hosting platform (Railway, Render, etc.), skip this step and use your deployed HTTPS URL directly.
+</Tip>
+
+</Step>
+
+<Step title="Register the webhook">
+
+In the Meta developer portal, go to **WhatsApp → Configuration**.
+
+1. Under **Webhook**, click **Edit**.
+2. Set the **Callback URL** to your HTTPS URL plus the `/webhook` path:
+   ```
+   https://a1b2c3d4.ngrok-free.app/webhook
+   ```
+3. Set the **Verify Token** to the exact same string you put in `VERIFY_TOKEN` in `app.py`:
+   ```python
+   VERIFY_TOKEN = "my-secret-token-123"
+   ```
+4. Click **Verify and Save**.
+
+Meta sends a GET request to your webhook URL with `hub.verify_token` and `hub.challenge`. Flask checks the token and echoes back the challenge. If it matches, the webhook is registered.
+
+</Step>
+
+<Step title="Subscribe to the messages field">
+
+After verifying the webhook, you need to subscribe to the specific event type Yoko handles.
+
+1. Still on the **Configuration** page, find the **Webhook fields** section.
+2. Click **Manage** and enable the **messages** field.
+3. Click **Done**.
+
+Without this subscription, incoming WhatsApp messages are not forwarded to your webhook.
+
+</Step>
+
+<Step title="Send a test message">
+
+From the **API Setup** page, use the test phone number provided by Meta to send a message to your WhatsApp number. You can also use a real WhatsApp account to message the number.
+
+Watch your Flask server logs. You should see the incoming POST request and the response sent back.
+
+If no logs appear:
+- Confirm the ngrok tunnel is still running
+- Confirm the webhook is subscribed to the `messages` field
+- Check that the Phone Number ID in `app.py` is correct
+
+</Step>
+
+</Steps>
+
+## The message sending payload
+
+When Yoko sends a reply, `enviar_mensaje()` posts this JSON payload to the WhatsApp API:
+
+```python app.py
+def enviar_mensaje(numero, texto):
+    url = ""   # https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages
+    headers = {
+        "Authorization": "Bearer",  # your access token
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero,
+        "type": "text",
+        "text": {"body": texto}
+    }
+    response = requests.post(url, headers=headers, json=payload)
+```
+
+- `messaging_product` must always be `"whatsapp"`
+- `to` is the sender's phone number in E.164 format (e.g., `5215512345678`), extracted from the incoming webhook payload
+- `type` is `"text"` for plain text replies
+- `text.body` contains the message string returned by the LLM
+
+## Webhook payload structure
+
+When a user sends a message, Meta delivers a POST to `/webhook` with a body like:
+
+```json
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "from": "5215512345678",
+                "text": { "body": "¿Cuándo son las fechas de inscripción?" }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`app.py` extracts the message body and sender number from this structure before calling `manejar_query()`.

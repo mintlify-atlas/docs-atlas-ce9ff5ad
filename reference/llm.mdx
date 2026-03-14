@@ -1,0 +1,151 @@
+---
+title: llm.py
+description: Groq API client that sends a contextualized prompt to the LLaMA 3 model and returns a response string.
+---
+
+`llm.py` is Yoko's language model layer. It wraps the [Groq API](https://console.groq.com) chat completions endpoint, builds a system prompt from the knowledge base context retrieved by `mcp.py`, and returns the model's reply as a plain string.
+
+## Constants
+
+<ParamField path="GROQ_API_KEY" type="string">
+  Your Groq API key, used in the `Authorization: Bearer` header for every request. Obtain one from the [Groq Console](https://console.groq.com).
+</ParamField>
+
+<ParamField path="GROQ_MODEL" type="string" default="llama3-8b-8192">
+  The Groq model identifier to use for completions. The default `llama3-8b-8192` is Meta's LLaMA 3 8B model with an 8,192-token context window.
+</ParamField>
+
+<Warning>
+  `GROQ_API_KEY` is hardcoded as an empty string in the source. Never commit a real key to version control. Use a `.env` file and `python-dotenv` to inject it at runtime. See [Configuration](/reference/configuration).
+</Warning>
+
+## Functions
+
+### consultar_llm(contexto, pregunta)
+
+Sends a two-message conversation to the Groq chat completions API and returns the model's text response.
+
+<ParamField path="contexto" type="string" required>
+  The answer string retrieved from `data.json` by `mcp.buscar_contexto`. Injected verbatim into the system prompt so the model only uses this information when answering.
+</ParamField>
+
+<ParamField path="pregunta" type="string" required>
+  The user's original WhatsApp message. Sent as the `user` role message.
+</ParamField>
+
+**Return value**
+
+<ResponseField name="response" type="string">
+  The content of `choices[0].message.content` from the Groq API response — the model's generated reply.
+
+  <Expandable title="Error and fallback strings">
+    <ResponseField name="HTTP error fallback" type="string">
+      `"Lo siento, hubo un error al consultar el modelo. Intenta de nuevo más tarde."` — returned when the Groq API responds with a non-200 status code.
+    </ResponseField>
+    <ResponseField name="Unexpected response fallback" type="string">
+      `"No se pudo generar una respuesta. Intenta con otra pregunta."` — returned when the API returns 200 but the body does not contain a `choices` array.
+    </ResponseField>
+    <ResponseField name="Exception fallback" type="string">
+      `"Ocurrió un error inesperado consultando la IA."` — returned when a network or runtime exception is raised.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**System prompt template**
+
+The system message constrains the model to answer only from the provided context:
+
+```
+Eres un asistente universitario responde usando solo esta información: {contexto}
+```
+
+This prevents the model from drawing on its general training data and keeps responses grounded in the university's knowledge base.
+
+**Request body sent to Groq**
+
+```json Groq API request body
+{
+  "model": "llama3-8b-8192",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Eres un asistente universitario responde usando solo esta información: Las inscripciones abren el 15 de febrero."
+    },
+    {
+      "role": "user",
+      "content": "¿Cuándo son las inscripciones?"
+    }
+  ],
+  "temperature": 0.3
+}
+```
+
+<Note>
+  `temperature: 0.3` produces focused, consistent answers. Increasing it toward `1.0` makes responses more varied and creative; decreasing it toward `0.0` makes them more deterministic. See [Configuration](/reference/configuration).
+</Note>
+
+**Full implementation**
+
+```python llm.py
+def consultar_llm(contexto, pregunta):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    messages = [
+        {"role": "system", "content": f"Eres un asistente universitario responde usando solo esta información: {contexto}"},
+        {"role": "user", "content": pregunta}
+    ]
+
+    data = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.3
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+
+        if response.status_code != 200:
+            print(f"❌ Error {response.status_code}: {response.text}")
+            return "Lo siento, hubo un error al consultar el modelo. Intenta de nuevo más tarde."
+
+        result = response.json()
+
+        if "choices" in result:
+            return result["choices"][0]["message"]["content"]
+        else:
+            return "No se pudo generar una respuesta. Intenta con otra pregunta."
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return "Ocurrió un error inesperado consultando la IA."
+```
+
+**Example Groq API response**
+
+```json Groq API response
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "model": "llama3-8b-8192",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Las inscripciones abren el 15 de febrero y cierran el 28 de febrero."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 54,
+    "completion_tokens": 22,
+    "total_tokens": 76
+  }
+}
+```

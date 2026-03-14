@@ -1,0 +1,164 @@
+---
+title: Architecture
+description: How app.py, mcp.py, llm.py, and data.json work together to handle a WhatsApp message from receipt to reply.
+---
+
+Yoko is built from four focused components, each responsible for a single concern. Understanding how they connect helps you extend or debug the system confidently.
+
+## Components
+
+<CardGroup cols={2}>
+  <Card title="app.py — Flask webhook server" icon="server">
+    Receives incoming HTTP requests from the Meta Cloud API. Handles webhook verification (GET) and message dispatch (POST).
+  </Card>
+  <Card title="mcp.py — Context matching layer" icon="magnifying-glass">
+    Searches `data.json` for the most relevant Q&A entry using fuzzy string matching, then passes the result to the LLM.
+  </Card>
+  <Card title="llm.py — LLM client" icon="brain">
+    Sends the retrieved context and the student's question to the Groq API and returns a natural-language answer.
+  </Card>
+  <Card title="data.json — Knowledge base" icon="database">
+    A JSON array of question/answer pairs that represent everything Yoko knows about your university.
+  </Card>
+</CardGroup>
+
+## Message flow
+
+Every student message travels through the same pipeline:
+
+```text
+Student (WhatsApp)
+      │
+      │  (sends message)
+      ▼
+Meta Cloud API
+      │
+      │  POST /webhook  (JSON payload)
+      ▼
+app.py — webhook()
+      │
+      │  extracts mensaje + numero
+      │  calls manejar_query(mensaje)
+      ▼
+mcp.py — buscar_contexto()
+      │
+      │  fuzzy-matches against data.json
+      │  returns closest respuesta (or fallback)
+      ▼
+mcp.py — manejar_query()
+      │
+      │  calls consultar_llm(contexto, mensaje)
+      ▼
+llm.py — consultar_llm()
+      │
+      │  POST https://api.groq.com/openai/v1/chat/completions
+      │  returns generated text
+      ▼
+app.py — enviar_mensaje(numero, respuesta)
+      │
+      │  POST Meta Graph API  (whatsapp message)
+      ▼
+Student (WhatsApp)
+      (receives reply)
+```
+
+## Webhook verification vs message handling
+
+The `/webhook` route in `app.py` handles two distinct HTTP methods:
+
+<AccordionGroup>
+  <Accordion title="GET — webhook verification">
+    When you register a webhook URL in the Meta developer dashboard, Meta sends a one-time GET request to confirm ownership. `app.py` checks that the `hub.verify_token` query parameter matches the `VERIFY_TOKEN` constant and responds with the `hub.challenge` value if it does.
+
+    ```python app.py
+    if request.method == "GET":
+        token_enviado = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if token_enviado == VERIFY_TOKEN:
+            return challenge, 200
+        return "Token inválido", 403
+    ```
+
+    A 200 response containing the challenge string tells Meta the server is legitimate. A 403 response (or any mismatch) causes registration to fail.
+  </Accordion>
+  <Accordion title="POST — incoming message handling">
+    Every message sent to your WhatsApp number arrives as a POST request with a JSON body. `app.py` extracts the message text and sender phone number, then triggers the processing pipeline.
+
+    ```python app.py
+    if request.method == "POST":
+        data = request.json
+        try:
+            entry = data["entry"][0]["changes"][0]["value"]
+            if "messages" in entry:
+                mensaje = entry["messages"][0]["text"]["body"]
+                numero = entry["messages"][0]["from"]
+                respuesta = manejar_query(mensaje)
+                if respuesta:
+                    enviar_mensaje(numero, respuesta)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+        return "OK", 200
+    ```
+
+    The route always returns HTTP 200. This prevents Meta from retrying the delivery, which would cause duplicate processing.
+
+    <Warning>
+      The nested `try/except` logs errors to stdout but still returns `"OK", 200`. This is intentional — Meta will retry any non-200 response. Make sure to check your server logs when debugging message failures.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Outbound reply
+
+After the LLM generates an answer, `app.py` sends it back to the student using the Meta WhatsApp Cloud API:
+
+```python app.py
+def enviar_mensaje(numero, texto):
+    url = ""  # Meta Graph API messages endpoint
+    headers = {
+        "Authorization": "Bearer",  # Bearer <WHATSAPP_TOKEN>
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero,
+        "type": "text",
+        "text": {"body": texto}
+    }
+    response = requests.post(url, headers=headers, json=payload)
+```
+
+The `numero` value comes directly from the incoming webhook payload (`entry.messages[0].from`), so the reply always goes to the correct sender.
+
+## Separation of concerns
+
+Each file has a single, well-defined responsibility:
+
+| File | Responsibility | Knows about |
+|---|---|---|
+| `app.py` | HTTP layer — receive and send | Flask, Meta API, `mcp.py` |
+| `mcp.py` | Retrieval layer — find context | `data.json`, `llm.py` |
+| `llm.py` | Generation layer — produce answer | Groq API |
+| `data.json` | Storage — university knowledge | (plain data, no code) |
+
+This separation means you can:
+
+- **Replace the LLM provider** by editing only `llm.py` — nothing else changes.
+- **Swap the knowledge base format** (e.g., a SQL database) by editing only `mcp.py`.
+- **Add authentication or rate limiting** to the HTTP layer in `app.py` without touching the AI logic.
+
+<Tip>
+  When a message fails to reach the student, start debugging in `app.py` (check the Meta API response in `enviar_mensaje`). When a reply is irrelevant or empty, start in `mcp.py` (check what `buscar_contexto` returned).
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Context matching" icon="magnifying-glass" href="/concepts/context-matching">
+    How `difflib` fuzzy matching finds the right answer in `data.json`
+  </Card>
+  <Card title="LLM integration" icon="brain" href="/concepts/llm-integration">
+    How `llm.py` constructs prompts and calls the Groq API
+  </Card>
+</CardGroup>

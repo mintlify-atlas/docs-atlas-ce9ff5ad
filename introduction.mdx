@@ -1,0 +1,79 @@
+---
+title: Introduction
+description: Yoko is an AI-powered WhatsApp chatbot that answers university student queries automatically using a local knowledge base and the Groq LLM.
+---
+
+## What is Yoko?
+
+Yoko is a Python-based chatbot that connects to WhatsApp via the Meta Cloud API. When a student sends a message, Yoko:
+
+1. Receives the message through a Flask webhook
+2. Searches a structured knowledge base for relevant context
+3. Sends that context along with the question to the Groq LLM (llama3-8b-8192)
+4. Returns a natural-language answer directly to the student on WhatsApp
+
+It is designed for university support scenarios — answering questions about schedules, enrollment, administrative procedures, and other campus-related topics.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="WhatsApp integration" icon="whatsapp">
+    Connects to the Meta WhatsApp Cloud API to receive and send messages in real time via a verified webhook.
+  </Card>
+  <Card title="Knowledge base lookup" icon="magnifying-glass">
+    Uses fuzzy string matching (`difflib`) to find the closest answer in a JSON knowledge base before calling the LLM.
+  </Card>
+  <Card title="Groq LLM responses" icon="brain">
+    Sends retrieved context and the user's question to `llama3-8b-8192` on Groq for accurate, conversational answers.
+  </Card>
+  <Card title="Lightweight & embeddable" icon="feather">
+    A minimal four-file Python application — easy to deploy on any server or cloud platform that supports Python and Flask.
+  </Card>
+</CardGroup>
+
+## How it works
+
+```
+Student (WhatsApp)
+      │
+      ▼
+Meta Cloud API  ──POST──▶  /webhook  (app.py)
+                                │
+                                ▼
+                         mcp.py: buscar_contexto()
+                         — fuzzy-match question against data.json
+                                │
+                                ▼
+                         llm.py: consultar_llm()
+                         — send (context + question) to Groq API
+                                │
+                                ▼
+                         app.py: enviar_mensaje()
+                         — reply to the student via WhatsApp API
+```
+
+## Project structure
+
+| File | Purpose |
+|---|---|
+| `app.py` | Flask server — webhook endpoint, message dispatch |
+| `mcp.py` | Context retrieval — fuzzy-matches questions against `data.json` |
+| `llm.py` | LLM client — sends prompts to Groq and returns answers |
+| `data.json` | Knowledge base — Q&A pairs for your university |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Yoko running locally in under five minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how the components fit together
+  </Card>
+  <Card title="Setup guide" icon="wrench" href="/guides/setup">
+    Full environment and dependency setup
+  </Card>
+  <Card title="WhatsApp configuration" icon="gear" href="/guides/whatsapp-configuration">
+    Configure the Meta webhook and API credentials
+  </Card>
+</CardGroup>
