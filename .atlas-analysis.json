@@ -1,0 +1,63 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Yoko",
+  "projectDescription": "An AI-powered WhatsApp chatbot for university assistance, combining Flask webhooks, fuzzy context matching, and Groq LLM to answer student queries automatically.",
+  "theme": "palm",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#EDE9FE",
+  "darkColor": "#4C1D95",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/context-matching",
+              "concepts/llm-integration"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/setup",
+              "guides/whatsapp-configuration",
+              "guides/knowledge-base",
+              "guides/deployment"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/app",
+              "reference/mcp",
+              "reference/llm",
+              "reference/configuration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "WhatsApp Cloud API webhook integration for receiving and sending messages",
+    "Fuzzy string matching to retrieve relevant answers from a local knowledge base",
+    "Groq LLM (llama3-8b-8192) for generating contextual AI responses",
+    "Flask-based HTTP server with webhook verification support",
+    "Simple JSON knowledge base for university-specific Q&A data"
+  ],
+  "publicApiSurface": [
+    "GET /webhook — Webhook verification endpoint (hub.verify_token, hub.challenge)",
+    "POST /webhook — Receives WhatsApp message events and dispatches AI responses",
+    "manejar_query(mensaje_usuario) — Orchestrates context lookup and LLM response generation",
+    "buscar_contexto(pregunta_usuario) — Fuzzy-matches user question against data.json knowledge base",
+    "consultar_llm(contexto, pregunta) — Sends context + question to Groq API and returns answer",
+    "enviar_mensaje(numero, texto) — Sends a WhatsApp text message via the Meta Cloud API"
+  ]
+}
